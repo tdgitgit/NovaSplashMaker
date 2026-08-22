@@ -1,4 +1,4 @@
-NOVA SPLASH + BOOT ANIMATION MAKER v1.3
+NOVA SPLASH + BOOT ANIMATION MAKER v1.6 FIXED3
 ========================
 
 MAKE A CUSTOM RETROID POCKET NOVA BOOT LOGO
@@ -239,3 +239,138 @@ IMPORTANT:
 - Splash logo uses Fastboot and does NOT require root.
 - Boot animation uses a Magisk module and DOES require Magisk/root.
 - MP4 is not supported in v1.3. Convert MP4 to GIF or PNG frames first.
+
+
+BOOT ANIMATION FIXES IN v1.4
+----------------------------
+1. Fixed the frame-folder generation error when the folder path contains spaces.
+   The old PowerShell call accidentally combined:
+     source folder + temp output folder + "Fit - Black"
+   into one invalid path.
+
+2. Fixed GIF generation calls for the same PowerShell argument issue.
+
+3. Magisk module output now uses the known-working installer format:
+   META-INF/com/google/android/update-binary
+   META-INF/com/google/android/updater-script
+   module.prop
+   post-fs-data.sh
+   system/media/bootanimation.zip
+   system/product/media/bootanimation.zip
+
+4. bootanimation.zip is stored without recompression inside the Magisk ZIP.
+
+5. Added path validation so generation errors are clearer.
+
+
+MAGISK FORMAT FIX IN v1.5
+-------------------------
+v1.5 now copies the exact module structure from the confirmed-working
+Nova_DARK_BootAnimation_Magisk module.
+
+Generated Magisk ZIP contains ONLY:
+  module.prop
+  post-fs-data.sh
+  system/product/media/bootanimation.zip
+
+Important:
+- No META-INF folder
+- No system/media duplicate
+- No extra outer folder
+- No README inside the module
+- Raw bootanimation.zip still uses STORE/no-compression for its PNG frames
+- Outer Magisk ZIP uses normal ZIP compression, matching the working module
+
+This is the format confirmed to install/work on Retroid Pocket Nova.
+
+
+EXACT MAGISK STRUCTURE FIX IN v1.6
+----------------------------------
+v1.6 no longer builds the Magisk module by recursively ZIPping a temp folder.
+
+It now writes the Magisk ZIP DIRECTLY and validates it before reporting success.
+
+The generated Magisk ZIP contains EXACTLY 3 files:
+  post-fs-data.sh
+  module.prop
+  system/product/media/bootanimation.zip
+
+There are:
+- NO META-INF files
+- NO system/media duplicate
+- NO README inside the module
+- NO extra outer folder
+- NO extra directory entries
+
+If the generated ZIP is missing any of the 3 required files, the tool throws an
+error instead of saying generation succeeded.
+
+
+V1.6 FIXED - NOVA PLAYBACK FIX
+-------------------------------
+This build keeps the exact Magisk module structure that installs correctly:
+
+  post-fs-data.sh
+  module.prop
+  system/product/media/bootanimation.zip
+
+The INNER bootanimation.zip now matches the confirmed-working Nova DARK file:
+
+  desc.txt
+  part0/
+  part1/
+
+desc.txt format:
+  1280 960 FPS
+  p 1 0 part0
+  p 0 0 part1
+
+Important playback fix:
+- part0 plays the selected GIF/frame sequence one time.
+- part1 contains the final frame and loops until Android finishes booting.
+- All files inside bootanimation.zip are written with TRUE ZIP method 0 / STORE.
+  This does NOT rely on .NET "NoCompression", which can still produce an
+  incompatible ZIP method on some runtimes.
+- Generated PNG names are 00000.png, 00001.png, etc., matching the working file.
+
+
+GIF PART1 HOTFIX - FIXED2
+-------------------------
+Fixes the error:
+  part1 has no PNG frames
+
+For GIF input, the ZIP writer now GUARANTEES a part1 loop:
+- If part1/00000.png exists, it uses it.
+- If Windows/PowerShell does not expose that copied file in time, the tool
+  directly maps the final part0 PNG into the ZIP as part1/00000.png.
+- Generation no longer fails because part1 appears empty.
+
+The final bootanimation.zip still contains:
+  desc.txt
+  part0/*.png
+  part1/00000.png
+
+and all inner files are TRUE ZIP STORE / method 0.
+
+
+FIXED3 - PREVENT WRONG ZIP SELECTION
+------------------------------------
+Magisk error:
+  This zip is not a Magisk module!
+
+means the RAW Android bootanimation.zip was selected by mistake.
+
+FIXED3 makes the filenames explicit:
+
+  *_RAW_BOOTANIMATION_DO_NOT_INSTALL.zip
+      -> Android bootanimation payload only.
+      -> NEVER install this directly in Magisk.
+
+  *_MAGISK_INSTALL_THIS.zip
+      -> Actual Magisk module.
+      -> Select THIS file in Magisk > Modules > Install from storage.
+
+The Magisk module still contains exactly:
+  post-fs-data.sh
+  module.prop
+  system/product/media/bootanimation.zip

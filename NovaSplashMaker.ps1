@@ -1,10 +1,12 @@
-﻿# Nova Splash + Boot Animation Maker v1.3
+﻿# Nova Splash + Boot Animation Maker v1.6 FIXED3 FIXED
 # Retroid Pocket Nova splash generator/flasher + Magisk boot animation maker.
 # No USB debugging is required for generation or Fastboot flashing.
 
 Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
-Add-Type -AssemblyName System.IO.Compression
+Add-Type -AssemblyName System.Drawing
+
+Add-Type -AssemblyName System.IO.Compression
+
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 $ErrorActionPreference = "Stop"
@@ -454,8 +456,217 @@ function Show-EnterFastbootHelp {
 }
 
 
+function Get-NovaCrc32([byte[]]$Data) {
+    [uint32]$crc = 4294967295
+    [uint32]$poly = 3988292384
+
+    foreach ($b in $Data) {
+        $crc = [uint32]($crc -bxor [uint32]$b)
+        for ($i = 0; $i -lt 8; $i++) {
+            if (($crc -band 1) -ne 0) {
+                $crc = [uint32](($crc -shr 1) -bxor $poly)
+            } else {
+                $crc = [uint32]($crc -shr 1)
+            }
+        }
+    }
+
+    return [uint32]($crc -bxor 4294967295)
+}
+
+function Get-NovaDosDateTime {
+    $dt = Get-Date
+    $year = [Math]::Max(1980, [Math]::Min(2107, $dt.Year))
+
+    [uint16]$dosTime = [uint16](
+        (($dt.Hour -band 31) -shl 11) -bor
+        (($dt.Minute -band 63) -shl 5) -bor
+        ([Math]::Floor($dt.Second / 2) -band 31)
+    )
+
+    [uint16]$dosDate = [uint16](
+        ((($year - 1980) -band 127) -shl 9) -bor
+        (($dt.Month -band 15) -shl 5) -bor
+        ($dt.Day -band 31)
+    )
+
+    return @($dosTime, $dosDate)
+}
+
+function New-NovaStoredBootZip([string]$SourceDir, [string]$ZipPath) {
+    if (-not (Test-Path -LiteralPath $SourceDir -PathType Container)) {
+        throw "Boot ZIP source folder does not exist: $SourceDir"
+    }
+
+    $descPath = Join-Path $SourceDir "desc.txt"
+    $part0Path = Join-Path $SourceDir "part0"
+    $part1Path = Join-Path $SourceDir "part1"
+
+    if (-not (Test-Path -LiteralPath $descPath -PathType Leaf)) {
+        throw "bootanimation source is missing desc.txt"
+    }
+    if (-not (Test-Path -LiteralPath $part0Path -PathType Container)) {
+        throw "bootanimation source is missing part0"
+    }
+    if (-not (Test-Path -LiteralPath $part1Path -PathType Container)) {
+        throw "bootanimation source is missing part1"
+    }
+
+    $files = New-Object System.Collections.Generic.List[object]
+    $files.Add([PSCustomObject]@{ File = Get-Item -LiteralPath $descPath; Name = "desc.txt" })
+
+    $initialPart0Frames = @(
+        Get-ChildItem -LiteralPath $part0Path -File -Filter "*.png" |
+            Sort-Object Name
+    )
+    foreach ($frame in $initialPart0Frames) {
+        $files.Add([PSCustomObject]@{
+            File = $frame
+            Name = ("part0/" + $frame.Name)
+        })
+    }
+
+    $part0Frames = @(
+        Get-ChildItem -LiteralPath $part0Path -File -Filter "*.png" |
+            Sort-Object Name
+    )
+
+    if ($part0Frames.Count -lt 1) {
+        throw "part0 has no PNG frames"
+    }
+
+    # part0 entries were already added above.
+    # For part1, use an existing PNG if present.
+    $part1Frames = @(
+        Get-ChildItem -LiteralPath $part1Path -File -Filter "*.png" |
+            Sort-Object Name
+    )
+
+    if ($part1Frames.Count -gt 0) {
+        foreach ($frame in $part1Frames) {
+            $files.Add([PSCustomObject]@{
+                File = $frame
+                Name = ("part1/" + $frame.Name)
+            })
+        }
+    } else {
+        # GIF hotfix:
+        # Some Windows/PowerShell combinations were reaching the ZIP stage
+        # before part1 was visible to Get-ChildItem. Never fail generation.
+        # Reuse the final part0 frame directly as part1/00000.png.
+        $fallbackFrame = $part0Frames[$part0Frames.Count - 1]
+        $files.Add([PSCustomObject]@{
+            File = $fallbackFrame
+            Name = "part1/00000.png"
+        })
+    }
+
+    if (Test-Path -LiteralPath $ZipPath) {
+        Remove-Item -Force -LiteralPath $ZipPath
+    }
+
+    $utf8 = New-Object System.Text.UTF8Encoding($false)
+    $dt = Get-NovaDosDateTime
+    [uint16]$dosTime = $dt[0]
+    [uint16]$dosDate = $dt[1]
+
+    $central = New-Object System.Collections.Generic.List[object]
+
+    $fs = [System.IO.File]::Open($ZipPath, [System.IO.FileMode]::Create)
+    $bw = New-Object System.IO.BinaryWriter($fs)
+
+    try {
+        foreach ($item in $files) {
+            [byte[]]$data = [System.IO.File]::ReadAllBytes($item.File.FullName)
+            [byte[]]$nameBytes = $utf8.GetBytes([string]$item.Name)
+
+            if ($data.LongLength -gt 4294967295) {
+                throw "Frame/file too large for standard ZIP: $($item.Name)"
+            }
+
+            [uint32]$size = [uint32]$data.Length
+            [uint32]$crc = Get-NovaCrc32 $data
+            [uint32]$localOffset = [uint32]$fs.Position
+
+            # Local file header.
+            $bw.Write([uint32]0x04034B50)
+            $bw.Write([uint16]20)
+            $bw.Write([uint16]0)
+            $bw.Write([uint16]0)   # compression method 0 = STORE
+            $bw.Write($dosTime)
+            $bw.Write($dosDate)
+            $bw.Write($crc)
+            $bw.Write($size)
+            $bw.Write($size)
+            $bw.Write([uint16]$nameBytes.Length)
+            $bw.Write([uint16]0)
+            $bw.Write($nameBytes)
+            $bw.Write($data)
+
+            $central.Add([PSCustomObject]@{
+                NameBytes   = $nameBytes
+                Crc         = $crc
+                Size        = $size
+                LocalOffset = $localOffset
+            })
+        }
+
+        [uint32]$centralOffset = [uint32]$fs.Position
+
+        foreach ($entry in $central) {
+            # Central directory header.
+            $bw.Write([uint32]0x02014B50)
+            $bw.Write([uint16]20)
+            $bw.Write([uint16]20)
+            $bw.Write([uint16]0)
+            $bw.Write([uint16]0)   # compression method 0 = STORE
+            $bw.Write($dosTime)
+            $bw.Write($dosDate)
+            $bw.Write([uint32]$entry.Crc)
+            $bw.Write([uint32]$entry.Size)
+            $bw.Write([uint32]$entry.Size)
+            $bw.Write([uint16]$entry.NameBytes.Length)
+            $bw.Write([uint16]0)
+            $bw.Write([uint16]0)
+            $bw.Write([uint16]0)
+            $bw.Write([uint16]0)
+            $bw.Write([uint32]0)
+            $bw.Write([uint32]$entry.LocalOffset)
+            $bw.Write([byte[]]$entry.NameBytes)
+        }
+
+        [uint32]$centralSize = [uint32]($fs.Position - $centralOffset)
+        [uint16]$entryCount = [uint16]$central.Count
+
+        # End of central directory.
+        $bw.Write([uint32]0x06054B50)
+        $bw.Write([uint16]0)
+        $bw.Write([uint16]0)
+        $bw.Write($entryCount)
+        $bw.Write($entryCount)
+        $bw.Write($centralSize)
+        $bw.Write($centralOffset)
+        $bw.Write([uint16]0)
+    } finally {
+        $bw.Dispose()
+        $fs.Dispose()
+    }
+}
+
 function New-ZipFromFolder([string]$SourceDir, [string]$ZipPath, [bool]$StoreOnly) {
-    if (Test-Path $ZipPath) { Remove-Item -Force $ZipPath }
+    if ($StoreOnly) {
+        # Android bootanimation.zip on this Nova must be TRUE ZIP method 0 / STORE.
+        New-NovaStoredBootZip -SourceDir $SourceDir -ZipPath $ZipPath
+        return
+    }
+
+    if (-not (Test-Path -LiteralPath $SourceDir)) {
+        throw "ZIP source folder does not exist: $SourceDir"
+    }
+
+    if (Test-Path -LiteralPath $ZipPath) {
+        Remove-Item -Force -LiteralPath $ZipPath
+    }
 
     $fs = [System.IO.File]::Open($ZipPath, [System.IO.FileMode]::Create)
     try {
@@ -465,7 +676,7 @@ function New-ZipFromFolder([string]$SourceDir, [string]$ZipPath, [bool]$StoreOnl
             $false
         )
         try {
-            $files = Get-ChildItem -Path $SourceDir -Recurse -File | Sort-Object FullName
+            $files = Get-ChildItem -LiteralPath $SourceDir -Recurse -File | Sort-Object FullName
             foreach ($file in $files) {
                 $rel = $file.FullName.Substring($SourceDir.Length)
                 while ($rel.StartsWith("\") -or $rel.StartsWith("/")) {
@@ -473,13 +684,11 @@ function New-ZipFromFolder([string]$SourceDir, [string]$ZipPath, [bool]$StoreOnl
                 }
                 $rel = $rel.Replace("\", "/")
 
-                if ($StoreOnly) {
-                    $level = [System.IO.Compression.CompressionLevel]::NoCompression
-                } else {
-                    $level = [System.IO.Compression.CompressionLevel]::Optimal
-                }
+                $entry = $zip.CreateEntry(
+                    $rel,
+                    [System.IO.Compression.CompressionLevel]::Optimal
+                )
 
-                $entry = $zip.CreateEntry($rel, $level)
                 $outStream = $entry.Open()
                 $inStream = [System.IO.File]::OpenRead($file.FullName)
                 try {
@@ -494,6 +703,118 @@ function New-ZipFromFolder([string]$SourceDir, [string]$ZipPath, [bool]$StoreOnl
         }
     } finally {
         $fs.Dispose()
+    }
+}
+
+
+function New-NovaMagiskBootModule(
+    [string]$BootAnimationZip,
+    [string]$OutputZip
+) {
+    if (-not (Test-Path -LiteralPath $BootAnimationZip -PathType Leaf)) {
+        throw "bootanimation.zip does not exist: $BootAnimationZip"
+    }
+
+    if (Test-Path -LiteralPath $OutputZip) {
+        Remove-Item -Force -LiteralPath $OutputZip
+    }
+
+    $modulePropText = @"
+id=nova_custom_bootanimation
+name=Nova Custom Boot Animation
+version=1.0
+versionCode=1
+author=Nova Splash Maker
+description=Custom 1280x960 boot animation generated by Nova Splash Maker.
+"@
+
+    $postFsText = "#!/system/bin/sh`nresetprop -n debug.sf.nobootanimation 0`n"
+    $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+    $fs = [System.IO.File]::Open($OutputZip, [System.IO.FileMode]::Create)
+    try {
+        $zip = New-Object System.IO.Compression.ZipArchive(
+            $fs,
+            [System.IO.Compression.ZipArchiveMode]::Create,
+            $false
+        )
+        try {
+            # 1/3: post-fs-data.sh at ZIP ROOT
+            $entry = $zip.CreateEntry(
+                "post-fs-data.sh",
+                [System.IO.Compression.CompressionLevel]::Optimal
+            )
+            $stream = $entry.Open()
+            try {
+                $bytes = $utf8NoBom.GetBytes($postFsText)
+                $stream.Write($bytes, 0, $bytes.Length)
+            } finally {
+                $stream.Dispose()
+            }
+
+            # 2/3: module.prop at ZIP ROOT
+            $entry = $zip.CreateEntry(
+                "module.prop",
+                [System.IO.Compression.CompressionLevel]::Optimal
+            )
+            $stream = $entry.Open()
+            try {
+                $bytes = $utf8NoBom.GetBytes(($modulePropText -replace "`r`n", "`n"))
+                $stream.Write($bytes, 0, $bytes.Length)
+            } finally {
+                $stream.Dispose()
+            }
+
+            # 3/3: bootanimation.zip at EXACT Nova overlay path
+            $entry = $zip.CreateEntry(
+                "system/product/media/bootanimation.zip",
+                [System.IO.Compression.CompressionLevel]::Optimal
+            )
+            $outStream = $entry.Open()
+            $inStream = [System.IO.File]::OpenRead($BootAnimationZip)
+            try {
+                $inStream.CopyTo($outStream)
+            } finally {
+                $inStream.Dispose()
+                $outStream.Dispose()
+            }
+        } finally {
+            $zip.Dispose()
+        }
+    } finally {
+        $fs.Dispose()
+    }
+
+    # HARD VALIDATION: output must contain EXACTLY these 3 files.
+    $checkFs = [System.IO.File]::OpenRead($OutputZip)
+    try {
+        $checkZip = New-Object System.IO.Compression.ZipArchive(
+            $checkFs,
+            [System.IO.Compression.ZipArchiveMode]::Read,
+            $false
+        )
+        try {
+            $actual = @($checkZip.Entries | ForEach-Object { $_.FullName } | Sort-Object)
+            $expected = @(
+                "module.prop",
+                "post-fs-data.sh",
+                "system/product/media/bootanimation.zip"
+            ) | Sort-Object
+
+            if ($actual.Count -ne 3) {
+                throw "Magisk ZIP validation failed: expected exactly 3 files, found $($actual.Count)."
+            }
+
+            for ($i = 0; $i -lt 3; $i++) {
+                if ($actual[$i] -ne $expected[$i]) {
+                    throw "Magisk ZIP validation failed. Wrong structure: $($actual -join ', ')"
+                }
+            }
+        } finally {
+            $checkZip.Dispose()
+        }
+    } finally {
+        $checkFs.Dispose()
     }
 }
 
@@ -520,9 +841,16 @@ function Build-AnimationFramesFromFolder(
     [string]$OutputFolder,
     [string]$FitMode
 ) {
+    if (-not (Test-Path -LiteralPath $SourceFolder -PathType Container)) {
+        throw "Frame source folder does not exist: $SourceFolder"
+    }
+    if (-not (Test-Path -LiteralPath $OutputFolder -PathType Container)) {
+        throw "Temporary output folder does not exist: $OutputFolder"
+    }
+
     $settings = Get-AnimationFitSettings $FitMode
 
-    $files = Get-ChildItem -Path $SourceFolder -File | Where-Object {
+    $files = Get-ChildItem -LiteralPath $SourceFolder -File | Where-Object {
         $_.Extension.ToLowerInvariant() -in @(".png", ".jpg", ".jpeg", ".bmp")
     } | Sort-Object Name
 
@@ -538,7 +866,7 @@ function Build-AnimationFramesFromFolder(
             $settings.Background
         )
         try {
-            $out = Join-Path $OutputFolder ("frame_{0:D5}.png" -f $i)
+            $out = Join-Path $OutputFolder ("{0:D5}.png" -f $i)
             $bmp.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
         } finally {
             $bmp.Dispose()
@@ -554,6 +882,16 @@ function Build-AnimationFramesFromGif(
     [string]$FitMode,
     [string]$TempRawFolder
 ) {
+    if (-not (Test-Path -LiteralPath $GifPath -PathType Leaf)) {
+        throw "GIF file does not exist: $GifPath"
+    }
+    if (-not (Test-Path -LiteralPath $OutputFolder -PathType Container)) {
+        throw "Temporary output folder does not exist: $OutputFolder"
+    }
+    if (-not (Test-Path -LiteralPath $TempRawFolder -PathType Container)) {
+        throw "Temporary GIF folder does not exist: $TempRawFolder"
+    }
+
     $settings = Get-AnimationFitSettings $FitMode
     $gif = [System.Drawing.Image]::FromFile($GifPath)
 
@@ -584,7 +922,7 @@ function Build-AnimationFramesFromGif(
                 $settings.Background
             )
             try {
-                $out = Join-Path $OutputFolder ("frame_{0:D5}.png" -f $i)
+                $out = Join-Path $OutputFolder ("{0:D5}.png" -f $i)
                 $bmp.Save($out, [System.Drawing.Imaging.ImageFormat]::Png)
             } finally {
                 $bmp.Dispose()
@@ -705,7 +1043,7 @@ function Show-BootAnimationMaker {
     $animHelp.ScrollBars = "Vertical"
     $animHelp.BackColor = [System.Drawing.Color]::FromArgb(8,8,10)
     $animHelp.ForeColor = [System.Drawing.Color]::Gainsboro
-    $animHelp.Text = "HOW TO USE:`r`n1. Choose an animated GIF OR a folder containing numbered PNG/JPG frames.`r`n2. Pick FPS and frame fit.`r`n3. Click GENERATE. The tool creates bootanimation.zip and a Magisk module ZIP.`r`n4. Copy the Magisk ZIP to the Nova.`r`n5. Open Magisk > Modules > Install from storage > choose the generated Magisk ZIP > Reboot.`r`n`r`nIMPORTANT: Splash logo uses Fastboot and does NOT need root. Boot animation uses Magisk and DOES require Magisk/root.`r`nMP4 is not supported in this version; convert MP4 to GIF or PNG frames first."
+    $animHelp.Text = "HOW TO USE:`r`n1. Choose an animated GIF OR a folder containing numbered PNG/JPG frames.`r`n2. Pick FPS and frame fit.`r`n3. Click GENERATE. The tool creates bootanimation.zip and a Nova-compatible Magisk ZIP using the confirmed working 3-file module structure.`r`n4. Copy the Magisk ZIP to the Nova.`r`n5. Open Magisk > Modules > Install from storage > choose ONLY the file ending in MAGISK_INSTALL_THIS.zip > Reboot.`r`nIMPORTANT: Never select the RAW_BOOTANIMATION_DO_NOT_INSTALL.zip file in Magisk.`r`n`r`nIMPORTANT: Splash logo uses Fastboot and does NOT need root. Boot animation uses Magisk and DOES require Magisk/root.`r`nMP4 is not supported in this version; convert MP4 to GIF or PNG frames first."
     $animForm.Controls.Add($animHelp)
 
     $animStatus = New-Object System.Windows.Forms.Label
@@ -812,7 +1150,7 @@ function Show-BootAnimationMaker {
 
         $save = New-Object System.Windows.Forms.SaveFileDialog
         $save.Filter = "Magisk Module ZIP|*.zip"
-        $save.FileName = "Nova_Custom_BootAnimation_Magisk.zip"
+        $save.FileName = "Nova_Custom_BootAnimation_MAGISK_INSTALL_THIS.zip"
         $save.Title = "Save Magisk boot animation module"
 
         if ($save.ShowDialog() -ne [System.Windows.Forms.DialogResult]::OK) { return }
@@ -820,12 +1158,11 @@ function Show-BootAnimationMaker {
         $work = Join-Path $env:TEMP ("NovaBootAnim_" + [Guid]::NewGuid().ToString("N"))
         $bootRoot = Join-Path $work "boot"
         $part0 = Join-Path $bootRoot "part0"
+        $part1 = Join-Path $bootRoot "part1"
         $rawTemp = Join-Path $work "raw"
-        $moduleRoot = Join-Path $work "module"
-
         New-Item -ItemType Directory -Force -Path $part0 | Out-Null
+        New-Item -ItemType Directory -Force -Path $part1 | Out-Null
         New-Item -ItemType Directory -Force -Path $rawTemp | Out-Null
-        New-Item -ItemType Directory -Force -Path $moduleRoot | Out-Null
 
         try {
             $generateAnimBtn.Enabled = $false
@@ -837,18 +1174,9 @@ function Show-BootAnimationMaker {
             $fps = [int]$fpsCombo.SelectedItem
 
             if ($script:AnimSourceType -eq "GIF") {
-                $frameCount = Build-AnimationFramesFromGif(
-                    $script:AnimSourcePath,
-                    $part0,
-                    $fitMode,
-                    $rawTemp
-                )
+                $frameCount = Build-AnimationFramesFromGif -GifPath $script:AnimSourcePath -OutputFolder $part0 -FitMode $fitMode -TempRawFolder $rawTemp
             } else {
-                $frameCount = Build-AnimationFramesFromFolder(
-                    $script:AnimSourcePath,
-                    $part0,
-                    $fitMode
-                )
+                $frameCount = Build-AnimationFramesFromFolder -SourceFolder $script:AnimSourcePath -OutputFolder $part0 -FitMode $fitMode
             }
 
             if ($frameCount -lt 1) {
@@ -856,7 +1184,30 @@ function Show-BootAnimationMaker {
             }
 
             $utf8NoBom = New-Object System.Text.UTF8Encoding($false)
-            $desc = "1280 960 $fps`n" + "p 0 0 part0`n"
+
+            # CONFIRMED WORKING NOVA FORMAT:
+            # part0 = play the selected animation once.
+            # part1 = hold/loop the last frame until Android finishes booting.
+            $lastFrame = Get-ChildItem -LiteralPath $part0 -File -Filter "*.png" |
+                Sort-Object Name |
+                Select-Object -Last 1
+
+            if (-not $lastFrame) {
+                throw "No final frame found for part1."
+            }
+
+            $part1Frame = Join-Path $part1 "00000.png"
+            try {
+                [System.IO.File]::Copy($lastFrame.FullName, $part1Frame, $true)
+            } catch {
+                # New-NovaStoredBootZip has a direct fallback to the final part0
+                # frame, so GIF generation can still complete safely.
+            }
+
+            $desc = "1280 960 $fps`n" +
+                    "p 1 0 part0`n" +
+                    "p 0 0 part1`n"
+
             [System.IO.File]::WriteAllText(
                 (Join-Path $bootRoot "desc.txt"),
                 $desc,
@@ -865,51 +1216,21 @@ function Show-BootAnimationMaker {
 
             $outputDir = Split-Path $save.FileName -Parent
             $baseName = [System.IO.Path]::GetFileNameWithoutExtension($save.FileName)
-            $rawBootZip = Join-Path $outputDir ($baseName.Replace("_Magisk", "") + "_bootanimation.zip")
+            $rawBootZip = Join-Path $outputDir ($baseName.Replace("_Magisk", "") + "_RAW_BOOTANIMATION_DO_NOT_INSTALL.zip")
 
-            $animStatus.Text = "Packing Android bootanimation.zip..."
+            $animStatus.Text = "Packing TRUE STORE bootanimation.zip with guaranteed part1..."
             [System.Windows.Forms.Application]::DoEvents()
             New-ZipFromFolder $bootRoot $rawBootZip $true
 
-            $moduleProp = @"
-id=nova_custom_bootanimation
-name=Nova Custom Boot Animation
-version=1.0
-versionCode=1
-author=Nova Splash Maker
-description=Custom 1280x960 boot animation generated by Nova Splash Maker.
-"@
-            [System.IO.File]::WriteAllText(
-                (Join-Path $moduleRoot "module.prop"),
-                ($moduleProp -replace "`r`n", "`n"),
-                $utf8NoBom
-            )
-
-            $postFs = "#!/system/bin/sh`nresetprop -n debug.sf.nobootanimation 0`n"
-            [System.IO.File]::WriteAllText(
-                (Join-Path $moduleRoot "post-fs-data.sh"),
-                $postFs,
-                $utf8NoBom
-            )
-
-            $moduleMedia = Join-Path $moduleRoot "system\product\media"
-            New-Item -ItemType Directory -Force -Path $moduleMedia | Out-Null
-            Copy-Item -Force $rawBootZip (Join-Path $moduleMedia "bootanimation.zip")
-
-            $installReadme = "INSTALL:`n1. Copy this ZIP to Nova.`n2. Open Magisk.`n3. Modules > Install from storage.`n4. Select this ZIP.`n5. Reboot.`n`nREMOVE/RESTORE:`nDisable or remove the module in Magisk, then reboot.`n"
-            [System.IO.File]::WriteAllText(
-                (Join-Path $moduleRoot "README_INSTALL.txt"),
-                $installReadme,
-                $utf8NoBom
-            )
-
-            $animStatus.Text = "Packing Magisk module..."
+            # Build the Magisk ZIP directly with EXACTLY 3 files.
+            # No META-INF. No system/media duplicate. No README. No outer folder.
+            $animStatus.Text = "Packing exact 3-file Nova Magisk module..."
             [System.Windows.Forms.Application]::DoEvents()
-            New-ZipFromFolder $moduleRoot $save.FileName $false
+            New-NovaMagiskBootModule -BootAnimationZip $rawBootZip -OutputZip $save.FileName
 
             $animStatus.Text = "Done: $frameCount frames @ $fps FPS."
             [System.Windows.Forms.MessageBox]::Show(
-                "Boot animation created successfully.`r`n`r`nFrames: $frameCount`r`nFPS: $fps`r`nResolution: 1280x960`r`n`r`nRAW BOOTANIMATION:`r`n$rawBootZip`r`n`r`nMAGISK MODULE:`r`n$($save.FileName)`r`n`r`nInstall the Magisk ZIP in Magisk > Modules > Install from storage, then reboot.",
+                "Boot animation created successfully.`r`nMagisk package format: Nova 2-PART WORKING format v1.6 FIXED3.`r`n`r`nFrames: $frameCount`r`nFPS: $fps`r`nResolution: 1280x960`r`n`r`nRAW BOOTANIMATION — DO NOT INSTALL IN MAGISK:`r`n$rawBootZip`r`n`r`nMAGISK MODULE — INSTALL THIS FILE:`r`n$($save.FileName)`r`n`r`nValidated Magisk structure:`r`npost-fs-data.sh`r`nmodule.prop`r`nsystem/product/media/bootanimation.zip`r`n`r`nbootanimation.zip:`r`ndesc.txt`r`npart0/`r`npart1/`r`nTRUE ZIP STORE / method 0`r`n`r`nInstall it in Magisk > Modules > Install from storage, then reboot.",
                 "Boot Animation Ready",
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Information
@@ -1046,7 +1367,7 @@ function Invoke-FastbootCompat([string[]]$Arguments) {
 # ---------------- Main window ----------------
 
 $form = New-Object System.Windows.Forms.Form
-$form.Text = "Nova Splash + Boot Animation Maker v1.3"
+$form.Text = "Nova Splash + Boot Animation Maker v1.6 FIXED3"
 $form.StartPosition = "CenterScreen"
 $form.FormBorderStyle = "Sizable"
 $form.MaximizeBox = $true
@@ -1070,7 +1391,7 @@ if ($wa.Height -lt 800 -or $wa.Width -lt 1150) {
 }
 
 $title = New-Object System.Windows.Forms.Label
-$title.Text = "RETROID POCKET NOVA — SPLASH + BOOT ANIMATION MAKER v1.3"
+$title.Text = "RETROID POCKET NOVA — SPLASH + BOOT ANIMATION MAKER v1.6 FIXED3"
 $title.Font = New-Object System.Drawing.Font("Segoe UI Semibold", 16)
 $title.Location = New-Object System.Drawing.Point(20, 15)
 $title.AutoSize = $true
@@ -1259,7 +1580,8 @@ $toolTip.SetToolTip($fastbootHowBtn, "Step 2 help: shows both the hardware-butto
 $toolTip.SetToolTip($flashBtn, "Writes your generated splash.img to the Nova splash partition. Enabled only after CHECK NOVA succeeds.")
 $toolTip.SetToolTip($rebootBtn, "Use after a successful flash to reboot the Nova back into Android.")
 $toolTip.SetToolTip($generateBtn, "Creates a Nova-compatible 1280x960, 32 MiB splash.img.")
-$toolTip.SetToolTip($fitCombo, "Fit keeps the full image. Fill/Crop fills the screen. Stretch forces 4:3.")
+$toolTip.SetToolTip($fitCombo, "Fit keeps the full image. Fill/Crop fills the screen. Stretch forces 4:3.")
+
 $toolTip.SetToolTip($openAnimBtn, "Creates an Android bootanimation.zip and a ready-to-install Magisk module ZIP. Requires Magisk/root on the Nova.")
 
 $warning = New-Object System.Windows.Forms.Label
@@ -1378,7 +1700,8 @@ $generateBtn.Add_Click({
     }
 })
 
-$openAnimBtn.Add_Click({ Show-BootAnimationMaker })
+$openAnimBtn.Add_Click({ Show-BootAnimationMaker })
+
 $setupFbBtn.Add_Click({ Show-FastbootSetup })
 $fastbootHowBtn.Add_Click({ Show-EnterFastbootHelp })
 
