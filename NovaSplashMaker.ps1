@@ -1027,7 +1027,7 @@ function Show-BootAnimationMaker {
     $animForm.Controls.Add($loopLabel)
 
     $generateAnimBtn = New-Object System.Windows.Forms.Button
-    $generateAnimBtn.Text = "GENERATE BOOT ANIMATION + MAGISK ZIP"
+    $generateAnimBtn.Text = "GENERATE MAGISK BOOT ANIMATION ZIP"
     $generateAnimBtn.Location = New-Object System.Drawing.Point(465, 375)
     $generateAnimBtn.Size = New-Object System.Drawing.Size(320, 48)
     $generateAnimBtn.BackColor = [System.Drawing.Color]::FromArgb(210, 0, 120)
@@ -1043,7 +1043,7 @@ function Show-BootAnimationMaker {
     $animHelp.ScrollBars = "Vertical"
     $animHelp.BackColor = [System.Drawing.Color]::FromArgb(8,8,10)
     $animHelp.ForeColor = [System.Drawing.Color]::Gainsboro
-    $animHelp.Text = "HOW TO USE:`r`n1. Choose an animated GIF OR a folder containing numbered PNG/JPG frames.`r`n2. Pick FPS and frame fit.`r`n3. Click GENERATE. The tool creates bootanimation.zip and a Nova-compatible Magisk ZIP using the confirmed working 3-file module structure.`r`n4. Copy the Magisk ZIP to the Nova.`r`n5. Open Magisk > Modules > Install from storage > choose ONLY the file ending in MAGISK_INSTALL_THIS.zip > Reboot.`r`nIMPORTANT: Never select the RAW_BOOTANIMATION_DO_NOT_INSTALL.zip file in Magisk.`r`n`r`nIMPORTANT: Splash logo uses Fastboot and does NOT need root. Boot animation uses Magisk and DOES require Magisk/root.`r`nMP4 is not supported in this version; convert MP4 to GIF or PNG frames first."
+    $animHelp.Text = "HOW TO USE:`r`n1. Choose an animated GIF OR a folder containing numbered PNG/JPG frames.`r`n2. Pick FPS and frame fit.`r`n3. Click GENERATE. The tool creates ONE Nova-compatible Magisk ZIP using the confirmed working 3-file module structure.`r`n4. Copy that Magisk ZIP to the Nova.`r`n5. Open Magisk > Modules > Install from storage > choose the generated ZIP > Reboot.`r`n`r`nIMPORTANT: Splash logo uses Fastboot and does NOT need root. Boot animation uses Magisk and DOES require Magisk/root.`r`nMP4 is not supported in this version; convert MP4 to GIF or PNG frames first."
     $animForm.Controls.Add($animHelp)
 
     $animStatus = New-Object System.Windows.Forms.Label
@@ -1214,23 +1214,21 @@ function Show-BootAnimationMaker {
                 $utf8NoBom
             )
 
-            $outputDir = Split-Path $save.FileName -Parent
-            $baseName = [System.IO.Path]::GetFileNameWithoutExtension($save.FileName)
-            $rawBootZip = Join-Path $outputDir ($baseName.Replace("_Magisk", "") + "_RAW_BOOTANIMATION_DO_NOT_INSTALL.zip")
+            $rawBootZip = Join-Path $work "bootanimation.zip"
 
-            $animStatus.Text = "Packing TRUE STORE bootanimation.zip with guaranteed part1..."
+            $animStatus.Text = "Building internal bootanimation.zip..."
             [System.Windows.Forms.Application]::DoEvents()
             New-ZipFromFolder $bootRoot $rawBootZip $true
 
             # Build the Magisk ZIP directly with EXACTLY 3 files.
             # No META-INF. No system/media duplicate. No README. No outer folder.
-            $animStatus.Text = "Packing exact 3-file Nova Magisk module..."
+            $animStatus.Text = "Packing one-file Nova Magisk module..."
             [System.Windows.Forms.Application]::DoEvents()
             New-NovaMagiskBootModule -BootAnimationZip $rawBootZip -OutputZip $save.FileName
 
             $animStatus.Text = "Done: $frameCount frames @ $fps FPS."
             [System.Windows.Forms.MessageBox]::Show(
-                "Boot animation created successfully.`r`nMagisk package format: Nova 2-PART WORKING format v1.6 FIXED3.`r`n`r`nFrames: $frameCount`r`nFPS: $fps`r`nResolution: 1280x960`r`n`r`nRAW BOOTANIMATION — DO NOT INSTALL IN MAGISK:`r`n$rawBootZip`r`n`r`nMAGISK MODULE — INSTALL THIS FILE:`r`n$($save.FileName)`r`n`r`nValidated Magisk structure:`r`npost-fs-data.sh`r`nmodule.prop`r`nsystem/product/media/bootanimation.zip`r`n`r`nbootanimation.zip:`r`ndesc.txt`r`npart0/`r`npart1/`r`nTRUE ZIP STORE / method 0`r`n`r`nInstall it in Magisk > Modules > Install from storage, then reboot.",
+                "Boot animation created successfully.`r`nOne-file output mode.`r`n`r`nFrames: $frameCount`r`nFPS: $fps`r`nResolution: 1280x960`r`n`r`nMAGISK MODULE — INSTALL THIS FILE:`r`n$($save.FileName)`r`n`r`nValidated Magisk structure:`r`npost-fs-data.sh`r`nmodule.prop`r`nsystem/product/media/bootanimation.zip`r`n`r`nInner bootanimation.zip:`r`ndesc.txt`r`npart0/`r`npart1/`r`nTRUE ZIP STORE / method 0`r`n`r`nInstall it in Magisk > Modules > Install from storage, then reboot.",
                 "Boot Animation Ready",
                 [System.Windows.Forms.MessageBoxButtons]::OK,
                 [System.Windows.Forms.MessageBoxIcon]::Information
@@ -1245,7 +1243,7 @@ function Show-BootAnimationMaker {
             ) | Out-Null
         } finally {
             $generateAnimBtn.Enabled = $true
-            $generateAnimBtn.Text = "GENERATE BOOT ANIMATION + MAGISK ZIP"
+            $generateAnimBtn.Text = "GENERATE MAGISK BOOT ANIMATION ZIP"
             try { Remove-Item -Recurse -Force $work -ErrorAction SilentlyContinue } catch {}
         }
     })
@@ -1434,7 +1432,7 @@ $openAnimBtn.ForeColor = [System.Drawing.Color]::LightSkyBlue
 $animGroup.Controls.Add($openAnimBtn)
 
 $animInstallNote = New-Object System.Windows.Forms.Label
-$animInstallNote.Text = "Creates bootanimation.zip + Magisk ZIP.`r`nInstall: Magisk > Modules > Install from storage > Reboot."
+$animInstallNote.Text = "Creates ONE Magisk ZIP only.`r`nInstall: Magisk > Modules > Install from storage > Reboot."
 $animInstallNote.Location = New-Object System.Drawing.Point(315, 82)
 $animInstallNote.Size = New-Object System.Drawing.Size(265, 58)
 $animInstallNote.ForeColor = [System.Drawing.Color]::Silver
@@ -1582,7 +1580,7 @@ $toolTip.SetToolTip($rebootBtn, "Use after a successful flash to reboot the Nova
 $toolTip.SetToolTip($generateBtn, "Creates a Nova-compatible 1280x960, 32 MiB splash.img.")
 $toolTip.SetToolTip($fitCombo, "Fit keeps the full image. Fill/Crop fills the screen. Stretch forces 4:3.")
 
-$toolTip.SetToolTip($openAnimBtn, "Creates an Android bootanimation.zip and a ready-to-install Magisk module ZIP. Requires Magisk/root on the Nova.")
+$toolTip.SetToolTip($openAnimBtn, "Creates one ready-to-install Magisk boot animation ZIP. Requires Magisk/root on the Nova.")
 
 $warning = New-Object System.Windows.Forms.Label
 $warning.Text = "Splash: generate without root; Fastboot is only needed to flash.   Animation: generate on PC, then install the generated module with Magisk/root."

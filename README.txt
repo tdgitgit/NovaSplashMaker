@@ -1,4 +1,4 @@
-NOVA SPLASH + BOOT ANIMATION MAKER v1.0
+NOVA SPLASH + BOOT ANIMATION MAKER v1.6 FIXED3
 ========================
 
 MAKE A CUSTOM RETROID POCKET NOVA BOOT LOGO
@@ -278,7 +278,7 @@ Important:
 - No system/media duplicate
 - No extra outer folder
 - No README inside the module
-- Raw bootanimation.zip still uses STORE/no-compression for its PNG frames
+- Internal bootanimation.zip still uses STORE/no-compression for its PNG frames (not exported separately)
 - Outer Magisk ZIP uses normal ZIP compression, matching the working module
 
 This is the format confirmed to install/work on Retroid Pocket Nova.
