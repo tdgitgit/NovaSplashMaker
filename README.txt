@@ -1,4 +1,4 @@
-NOVA SPLASH + BOOT ANIMATION MAKER v1.0
+NOVA SPLASH + BOOT ANIMATION MAKER v1.6 FIXED3
 ========================
 
 MAKE A CUSTOM RETROID POCKET NOVA BOOT LOGO
@@ -64,11 +64,11 @@ FILES
 NovaSplashMaker.bat  -> double-click this
 NovaSplashMaker.ps1  -> app code
 README.txt           -> instructions
-sample/              -> example artwork
+sample/              -> not included; bring your own artwork
 
 SHARING
 -------
-Share the whole ZIP. Recipients do NOT need your splash_stock.img.
+Share the whole ZIP. Recipients do NOT need splash_stock.img. That file is not included.
 
 
 BUTTON GUIDE

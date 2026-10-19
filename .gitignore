@@ -1,0 +1,7 @@
+# Runtime files. fastboot_path.txt can contain a Windows username path.
+fastboot_path.txt
+*.img
+*.preview.png
+*.zip
+Thumbs.db
+desktop.ini
